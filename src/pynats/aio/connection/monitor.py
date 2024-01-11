@@ -3,6 +3,7 @@ from __future__ import annotations
 from anyio import TASK_STATUS_IGNORED, sleep
 from anyio.abc import TaskStatus
 
+from ...errors import ConnectionStaleError
 from .writer import Writer
 
 
@@ -50,15 +51,13 @@ class Monitor:
             if self.protocol.is_cancelled():
                 return
 
-            if self.protocol.exceeded_outstanding_pings_limit():
-                if not self.protocol.is_closed():
-                    self.protocol.receive_eof_from_client()
-                return
+            self._check()
 
-            try:
-                self.writer.write(self.protocol.ping())
-                await self.writer.flush(wait=True)
-            except Exception:
-                if not self.protocol.is_closed():
-                    self.protocol.receive_eof_from_server()
-                return
+            self.writer.write(self.protocol.ping())
+            await self.writer.flush(wait=True)
+
+    def _check(self) -> None:
+        if self.protocol.exceeded_outstanding_pings_limit():
+            if not self.protocol.is_closed():
+                self.protocol.receive_eof_from_client()
+            raise ConnectionStaleError

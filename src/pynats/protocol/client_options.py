@@ -34,7 +34,7 @@ class ClientOptions:
     # Protocol parser
     max_control_line_size: int = 4096
     # Transport
-    read_chunk_size: int = 4096
+    rcv_buffer_size: int = 4096
     # Pending buffer
     pending_buffer_size: int = 65536
     # Ping/Pong

@@ -54,10 +54,9 @@ class Transport(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def read(self, buffer_size: int) -> bytes:
+    async def read(self) -> bytes:
         """
-        Reads a sequence of bytes from the underlying transport, up to buffer_size. The buffer_size is ignored in case
-        the transport carries already frames entire messages (i.e. websocket).
+        Reads a sequence of bytes from the underlying transport.
         """
         pass
 

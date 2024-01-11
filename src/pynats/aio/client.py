@@ -469,7 +469,7 @@ class Client(ClientStateMixin):
                     with fail_after(self.options.connect_timeout):
                         # The run() task will notify when the connection is
                         # established, so we just need to wait for it
-                        await tg.start(current_connection.run)
+                        await tg.start(current_connection.__call__)
                         # Recreate all subscriptions
                         await self._request_reply._init_request_sub()
                         for sub in self._subscriptions._subs.values():

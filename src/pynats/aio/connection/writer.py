@@ -11,7 +11,10 @@ from anyio import (
 from anyio.abc import TaskStatus
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
+from pynats.protocol.errors import ConnectionNotEstablishedError
+
 from ...core.pending_buffer import PendingBuffer
+from ...errors import ConnectionClosedError
 from ...protocol import ConnectionProtocol
 from ..transport import Transport
 
@@ -26,9 +29,8 @@ class Writer:
     If there is no pending flush request, the writer will wait until
     the next flush request is received.
 
-    The writer is not responsible for closing the transport or the
-    connection. It will exit when the connection is closed or the
-    transport is closed.
+    The writer task exits when the transport is closed or when the
+    connection is closed.
     """
 
     def __init__(
@@ -56,7 +58,7 @@ class Writer:
         eventually when the event loop is ran.
         """
         if self.flusher_queue_snd is None:
-            raise RuntimeError("Writer not started")
+            raise ConnectionNotEstablishedError
         # Put the data in the pending buffer
         self.pending_buffer.append(data)
 
@@ -70,7 +72,7 @@ class Writer:
         flush operation is completed.
         """
         if self.flusher_queue_snd is None:
-            raise RuntimeError("Writer not started")
+            raise ConnectionNotEstablishedError
         # Create a new event
         evt = Event()
         # Put the event in the queue
@@ -78,7 +80,7 @@ class Writer:
             await self.flusher_queue_snd.send(evt)
             self.flush_queue_pending += 1
         except (ClosedResourceError, BrokenResourceError):
-            raise RuntimeError("Writer closed")
+            raise ConnectionClosedError
         # Wait for the event to be set
         if wait:
             await evt.wait()
@@ -88,37 +90,37 @@ class Writer:
     ) -> None:
         """Run until connection is closed or transport is closed."""
 
+        # Safety check
         if self.protocol.is_closed():
-            return
+            raise ConnectionClosedError
 
         (
             self.flusher_queue_snd,
             self.flusher_queue_rcv,
         ) = create_memory_object_stream()
 
+        # Notify that task is started once the queue is created
         task_status.started()
 
         while True:
-            if self.transport.at_eof():
+            if self.protocol.is_cancelled():
                 return
 
-            # Exit if the connection is closed, exit the writer
-            if self.protocol.is_closed():
-                return
-
-            # Wait until next flush request
             try:
                 evt = await self.flusher_queue_rcv.receive()
                 self.flush_queue_pending -= 1
-            # If flusher queue is closed, exit the writer
             except (EndOfStream, BrokenResourceError):
+                if not self.protocol.is_cancelled():
+                    self.protocol.receive_eof_from_client()
                 return
+
             if self.pending_buffer.is_empty():
                 continue
-            with self.pending_buffer.borrow() as pending:
-                try:
+
+            try:
+                with self.pending_buffer.borrow() as pending:
                     self.transport.writelines(pending)
                     await self.transport.drain()
-                finally:
-                    if not evt.is_set():
-                        evt.set()
+            finally:
+                if not evt.is_set():
+                    evt.set()

@@ -71,15 +71,6 @@ class ConnectionStaleError(ConnectionError):
     pass
 
 
-# Server errors
-
-
-class NatsServerError(NatsError):
-    """Error raised when the server sends an error."""
-
-    pass
-
-
 # Client errors
 
 

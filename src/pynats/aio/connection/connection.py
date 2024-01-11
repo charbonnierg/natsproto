@@ -48,7 +48,9 @@ class Connection:
         if self.cancel_event and not self.cancel_event.is_set():
             self.cancel_event.set()
 
-    async def run(self, task_status: TaskStatus[None] = TASK_STATUS_IGNORED) -> None:
+    async def __call__(
+        self, task_status: TaskStatus[None] = TASK_STATUS_IGNORED
+    ) -> None:
         """Run a single connection task for its entire lifetime."""
 
         self.cancel_event = Event()
@@ -57,7 +59,9 @@ class Connection:
             async with create_task_group() as tg:
                 await tg.start(self.reader)
                 await self._upgrade_transport_if_needed()
-                await self._send_connect_command()
+                self.transport.write(self.protocol.connect())
+                self.transport.write(self.protocol.ping())
+                await self.transport.drain()
                 await self.reader.wait_until_connected()
                 await tg.start(self.writer)
                 await tg.start(self.monitor)
@@ -66,9 +70,20 @@ class Connection:
                 tg.cancel_scope.cancel()
         finally:
             await self._close_transport()
+            # FIXME: This is a bit weird, it's the only place in client
+            # where we call .mark_as_something() on the protocol
+            # instance. All other state transitions are handled
+            # within the protocol itself
+            # The problem is that connection protocol ends in a CLOSED
+            # state, but needs to be in a WAITING_FOR_SERVER_SELECTION
+            # state in order to reconnect. So for now, we mark it
+            # manually here.
+            if not self.protocol.is_cancelled():
+                self.protocol.mark_as_closing()
+            self.protocol.mark_as_closed()
+            self.protocol.mark_as_waiting_for_server_selection()
 
     async def _close_transport(self) -> None:
-        """Close the transport."""
         with self.pending_buffer.borrow() as pending:
             self.transport.writelines(pending)
             await self.transport.drain()
@@ -76,7 +91,6 @@ class Connection:
         await self.transport.wait_closed()
 
     async def _open_transport(self) -> None:
-        """Open the transport."""
         # Check if a TLS upgrade is required
         tls_upgrade_required = (
             self.protocol.options.ssl_context and self.transport.requires_tls_upgrade()
@@ -99,7 +113,6 @@ class Connection:
             await self.transport.connect()
 
     async def _upgrade_transport_if_needed(self) -> None:
-        """Upgrade the transport to TLS if needed."""
         info = self.protocol.get_current_server_info()
         if not info:
             raise ConnectionNotEstablishedError
@@ -116,13 +129,6 @@ class Connection:
             ssl_context=self.protocol.options.ssl_context(),
         )
 
-    async def _send_connect_command(self) -> None:
-        """Send the connect command to the server."""
-        # Send the connect message
-        self.transport.write(self.protocol.connect())
-        self.transport.write(self.protocol.ping())
-        await self.transport.drain()
-
     @classmethod
     def create(
         cls,
@@ -136,11 +142,10 @@ class Connection:
         """
         transport = transport_factory(
             server.uri,
-            client.options.read_chunk_size,
+            client.options.rcv_buffer_size,
         )
         # Create a new reader, writer and monitor
         reader = Reader(
-            client.options.read_chunk_size,
             transport,
             client._protocol,
             client._subscriptions,

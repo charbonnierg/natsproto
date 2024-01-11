@@ -12,13 +12,15 @@ class TcpTransport(Transport):
     def __init__(
         self,
         uri: ParseResult,
-        buffer_size: int,
+        rcv_chunk_size: int,
+        rcv_buffer_size: int,
         tls_hostname: str | None = None,
     ):
         self._uri = uri
         self._url = uri.geturl()
         self._tls_hostname = tls_hostname or uri.hostname
-        self._buffer_size = buffer_size
+        self._rcv_chunk_size = rcv_chunk_size
+        self._rcv_buffer_size = rcv_buffer_size
         self._bare_io_reader: asyncio.StreamReader | None = None
         self._io_reader: asyncio.StreamReader | None = None
         self._bare_io_writer: asyncio.StreamWriter | None = None
@@ -55,7 +57,7 @@ class TcpTransport(Transport):
         r, w = await asyncio.open_connection(
             host=self._uri.hostname,
             port=self._uri.port,
-            limit=self._buffer_size,
+            limit=self._rcv_buffer_size,
         )
         # We keep a reference to the initial transport we used when
         # establishing the connection in case we later upgrade to TLS
@@ -96,8 +98,8 @@ class TcpTransport(Transport):
     def writelines(self, payload: list[bytes]) -> None:
         return self.writer.writelines(payload)
 
-    async def read(self, buffer_size: int) -> bytes:
-        return await self.reader.read(buffer_size)
+    async def read(self) -> bytes:
+        return await self.reader.read(self._rcv_chunk_size)
 
     async def drain(self) -> None:
         return await self.writer.drain()

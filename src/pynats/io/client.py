@@ -34,7 +34,7 @@ class Client(ClientStateMixin):
             self._pending_buffer,
             transport_factory(
                 server.uri,
-                self.options.read_chunk_size,
+                self.options.rcv_buffer_size,
                 receive_timeout=self.options.connect_timeout,
             ),
         )

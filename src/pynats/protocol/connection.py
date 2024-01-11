@@ -142,7 +142,7 @@ class ConnectionProtocol(ConnectionStateMixin):
             self.status = ConnectionState.CLOSED
             raise ConnectionServerPoolEmpty
         # Update state
-        self.status = ConnectionState.WAITING_FOR_SERVER_INFO
+        self.mark_as_waiting_for_server_info()
         self._current_server_or_none = srv
         return self._current_server_or_none
 
@@ -183,7 +183,7 @@ class ConnectionProtocol(ConnectionStateMixin):
             sort_keys=True,
         )
         # Update state
-        self.status = ConnectionState.WAITING_FOR_CLIENT_PING
+        self.mark_as_waiting_for_client_ping()
         # Return CONNECT byte string
         return f"{CONNECT_OP_S} {connect_opts}{CRLF_S}".encode()
 
@@ -209,7 +209,7 @@ class ConnectionProtocol(ConnectionStateMixin):
         if self.is_closing():
             raise ConnectionClosingError
         if self.is_waiting_for_client_ping():
-            self.status = ConnectionState.WAITING_FOR_SERVER_PONG
+            self.mark_as_waiting_for_server_pong()
         self._outstanding_pings += 1
         return PING_CMD
 
@@ -314,12 +314,10 @@ class ConnectionProtocol(ConnectionStateMixin):
         This function can only be called once else it
         raises a RuntimeError.
         """
-        if self.is_closed():
-            raise ConnectionClosedError
         if self.is_waiting_for_server_selection():
             raise ConnectionNotEstablishedError
         self._received_eof = True
-        self.status = ConnectionState.CLOSING
+        self.mark_as_closing()
 
     def receive_eof_from_client(self) -> None:
         """Close the connection from client side.
@@ -327,10 +325,8 @@ class ConnectionProtocol(ConnectionStateMixin):
         This function can only be called once else it
         raises a RuntimeError.
         """
-        if self.is_closed():
-            raise ConnectionClosedError
         self._received_eof = True
-        self.status = ConnectionState.CLOSING
+        self.mark_as_closing()
 
     def events_received(self) -> list[Event]:
         events, self._events = self._events, []
@@ -366,7 +362,7 @@ class ConnectionProtocol(ConnectionStateMixin):
                 if self.is_cancelled():
                     if not self._closed_event_sent:
                         self._closed_event_sent = True
-                        self.status = ConnectionState.CLOSED
+                        self.mark_as_closed()
                         self._events.append(ClosedEvent())
                         yield None
                     return
@@ -433,6 +429,8 @@ class ConnectionProtocol(ConnectionStateMixin):
                         raise InvalidProtocolMessageError
                     # Mark the connection as closed if the error is not recoverable
                     if not error.is_recoverable():
+                        # Don't go through the CLOSING state if error
+                        # is not recoverable.
                         self.status = ConnectionState.CLOSED
                     # Always yield the error even if the connection is closed
                     self._events.append(ErrorEvent(error))
@@ -458,7 +456,7 @@ class ConnectionProtocol(ConnectionStateMixin):
                                 "Please open a bug report. "
                                 "Current server should always be defined"
                             )
-                        self.status = ConnectionState.CONNECTED
+                        self.mark_as_connected()
                         srv.observe_connect()
                         self._events.append(CONNECTED_EVENT)
                     else:
@@ -479,7 +477,7 @@ class ConnectionProtocol(ConnectionStateMixin):
                     self._current_server_or_none.set_info(server_info)
                     # Mark the connection as waiting for pong if we were waiting for info
                     if self.status == ConnectionState.WAITING_FOR_SERVER_INFO:
-                        self.status = ConnectionState.WAITING_FOR_CLIENT_CONNECT
+                        self.mark_as_waiting_for_client_connect()
                         self._events.append(ConnectionRequestEvent(server_info))
                     else:
                         self._events.append(InfoEvent(server_info))

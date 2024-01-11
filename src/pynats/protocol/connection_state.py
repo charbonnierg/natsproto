@@ -180,6 +180,13 @@ class ConnectionStateMixin:
             or self.status == ConnectionState.CLOSED
         )
 
+    def mark_as_waiting_for_server_selection(self) -> None:
+        """Mark the connection as waiting for server selection."""
+        if self.status == ConnectionState.CLOSED:
+            self.status = ConnectionState.WAITING_FOR_SERVER_SELECTION
+            return
+        raise ConnectionStateTransitionError
+
     def mark_as_waiting_for_server_info(self) -> None:
         """Mark the connection as waiting for server INFO."""
         if self.status == ConnectionState.WAITING_FOR_SERVER_SELECTION:
@@ -227,6 +234,8 @@ class ConnectionStateMixin:
 
     def mark_as_closed(self) -> None:
         """Mark the connection as closed."""
+        if self.status == ConnectionState.CLOSED:
+            return
         if self.status == ConnectionState.CLOSING:
             self.status = ConnectionState.CLOSED
             return

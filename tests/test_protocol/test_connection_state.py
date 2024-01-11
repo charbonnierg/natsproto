@@ -394,7 +394,7 @@ class TestConnectionStateMixin:
             (ConnectionState.WAITING_FOR_SERVER_PONG, ConnectionStateTransitionError),
             (ConnectionState.CONNECTED, ConnectionStateTransitionError),
             (ConnectionState.CLOSING, None),
-            (ConnectionState.CLOSED, ConnectionStateTransitionError),
+            (ConnectionState.CLOSED, None),
         ],
     )
     def test_mark_as_closed(

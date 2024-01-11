@@ -3,7 +3,7 @@ from __future__ import annotations
 from anyio import TASK_STATUS_IGNORED, Event
 from anyio.abc import TaskStatus
 
-from ...errors import NatsServerError, TransportError
+from ...errors import ConnectionClosedError, TransportError
 from ...protocol import ConnectionProtocol, EventType
 from ..msg import Msg
 from ..subscription_registry import AsyncSubscriptionRegistry
@@ -32,13 +32,21 @@ class Reader:
 
     def __init__(
         self,
-        read_buffer_size: int,
         transport: Transport,
         protocol: ConnectionProtocol,
         subscriptions: AsyncSubscriptionRegistry,
         pending_pongs: list[Event],
     ) -> None:
-        self.read_buffer_size = read_buffer_size
+        """Create a new `Reader` instance.
+
+        Args:
+            transport: The transport to read data from.
+            protocol: The protocol to use to parse data.
+            subscriptions: The subscription registry to use to process
+                incoming messages.
+            pending_pongs: A list of `Event` objects to set when a `PONG`
+                protocol message is received from the server.
+        """
         self.transport = transport
         self.protocol = protocol
         self.subscriptions = subscriptions
@@ -82,7 +90,8 @@ class Reader:
     ) -> None:
         """Execute the `Reader` task.
 
-        This method will return when a `ClosedEvent` is received.
+        Raises:
+            `ConnectionClosedError` when a `ClosedEvent` is received.
         """
         # Create the connected event
         self._connected_event = Event()
@@ -119,7 +128,7 @@ class Reader:
                     error = event.body
                     if error.is_recoverable():
                         continue
-                    raise NatsServerError(error.message)
+                    error.throw()
 
                 # First INFO protocol message
                 if event.type == EventType.CONNECT_REQUEST:
@@ -134,7 +143,7 @@ class Reader:
 
                 # Exit the loop
                 if event.type == EventType.CLOSED:
-                    return
+                    raise ConnectionClosedError
 
             # Read more data
             if data := await self._read_more():
@@ -147,7 +156,7 @@ class Reader:
             return None
 
         try:
-            data_received = await self.transport.read(self.read_buffer_size)
+            data_received = await self.transport.read()
         except TransportError:
             if not self.protocol.is_closed():
                 self.protocol.receive_eof_from_server()
