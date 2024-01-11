@@ -91,7 +91,7 @@ class Client(ClientStateMixin):
         self._exit_stack.callback(self._reconnect_rcv_stream_or_none.close)
 
         # Kick-off the reconnect loop
-        await self._task_group_or_none.start(self._reconnect_task)
+        await self._task_group_or_none.start(self._reconnect_loop)
 
     async def close(self) -> None:
         """Close the connection.
@@ -413,11 +413,11 @@ class Client(ClientStateMixin):
     # Long running tasks        #
     #############################
 
-    async def _reconnect_task(
+    async def _reconnect_loop(
         self, task_status: TaskStatus[None] = TASK_STATUS_IGNORED
     ) -> None:
         """Reconnect to the server."""
-        tg = self._ensure_task_group()
+        parent_tg = self._ensure_task_group()
         # Start the reconnect loop
         while True:
             # Exit the loop if we're closing the client
@@ -472,12 +472,16 @@ class Client(ClientStateMixin):
 
             except ExceptionGroup:
                 if self.is_cancelled():
+                    if not parent_tg.cancel_scope.cancel_called:
+                        parent_tg.cancel_scope.cancel()
                     self.status = ClientState.CLOSED
                     return
                 self.status = ClientState.DISCONNECTED
                 continue
 
             if self.is_cancelled():
+                if not parent_tg.cancel_scope.cancel_called:
+                    parent_tg.cancel_scope.cancel()
                 self.status = ClientState.CLOSED
                 return
 
