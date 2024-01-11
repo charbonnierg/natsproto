@@ -427,27 +427,35 @@ class Client(ClientStateMixin):
             # Take a server from the pool
             server = self._protocol.select_server()
 
+            # Update client status
             if server.is_connection_attempt_a_reconnect():
                 self.status = ClientState.RECONNECTING
             else:
                 self.status = ClientState.CONNECTING
 
-            # Handle reconnect
+            # Apply reconnect delay
             if self.status == ClientState.RECONNECTING:
                 await sleep(1)
                 # We should wait for a bit in case of reconnect
 
+            # Create a new connection
+            current_connection = Connection.create(self, server)
+            self._current_connection_or_none = current_connection
+
+            # Kick-off the connection task
             try:
                 async with create_task_group() as tg:
-                    current_connection = Connection.create(self, server)
-                    self._current_connection_or_none = current_connection
+                    # Apply a timeout to the connection
+                    # This includes the time to connect and the time to
+                    # setup subscriptions.
                     with fail_after(self.options.connect_timeout):
-                        # The run() task will notify when the connection is
-                        # established, so we just need to wait for it
-                        await tg.start(current_connection.__call__)
-                        # Recreate all subscriptions
+                        # Wait for the connection to be established
+                        await tg.start(current_connection)
+                        # Create request/reply subscription
                         await self._request_reply._init_request_sub()
+                        # Recreate all subscriptions
                         for sub in self._subscriptions._subs.values():
+                            # Skip request/reply subscription
                             if sub.sid() == self._request_reply.sid():
                                 continue
                             await self._send_subscribe(
@@ -457,22 +465,20 @@ class Client(ClientStateMixin):
                         # established
                         if self.status == ClientState.CONNECTING:
                             self.status = ClientState.CONNECTED
-                            task_status.started()
-                            # Broadcast connection event
-                            waiters = list(self._waiters)
-                            self._waiters.clear()
+                            waiters, self._waiters = self._waiters, []
                             for waiter in waiters:
                                 waiter.set(current_connection)
+                            task_status.started()
 
             except ExceptionGroup:
                 if self.is_cancelled():
-                    tg.cancel_scope.cancel()
+                    self.status = ClientState.CLOSED
                     return
-                if self.status != ClientState.CONNECTING:
-                    self.status = ClientState.DISCONNECTED
+                self.status = ClientState.DISCONNECTED
                 continue
+
             if self.is_cancelled():
-                tg.cancel_scope.cancel()
+                self.status = ClientState.CLOSED
                 return
 
 
