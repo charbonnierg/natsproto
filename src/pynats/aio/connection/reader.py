@@ -3,7 +3,7 @@ from __future__ import annotations
 from anyio import TASK_STATUS_IGNORED, Event
 from anyio.abc import TaskStatus
 
-from ...errors import ConnectionClosedError, NatsServerError, TransportError
+from ...errors import NatsServerError, TransportError
 from ...protocol import ConnectionProtocol, EventType
 from ..msg import Msg
 from ..subscription_registry import AsyncSubscriptionRegistry
@@ -11,9 +11,23 @@ from ..transport import Transport
 
 
 class Reader:
-    """Read data from the transport and parse it.
+    """Read data from the transport, parse it and process it.
 
-    Closes the connection when the transport is closed.
+    The `Reader` class acts as a task to be started within an
+    `anyio` task group.
+
+    When started, it blocks until the first `INFO` protocol message
+    is received from the server, which makes it easy to wait until
+    the client is allowed to send a `CONNECT` protocol message.
+
+    The fist `INFO` protocol message is received as a `ConnectRequestEvent`
+    rather than an `InfoEvent`, so it is easy to distinguish it from
+    the following `INFO` protocol messages.
+
+    Same thing goes for the first `PONG` protocol message, which is
+    received as a `ConnectedEvent` rather than a `PongEvent`.
+
+    The `Reader` task exits when a `ClosedEvent` is received.
     """
 
     def __init__(
@@ -33,6 +47,32 @@ class Reader:
         self._connected_event: Event | None = None
 
     async def wait_until_connected(self) -> None:
+        """Wait until the client is connected.
+
+        Client is considered connected after:
+        - it received an `INFO` protocol message from the server
+        - it sent a `CONNECT` protocol message
+        - it sent a `PING` protocol message
+        - it received a `PONG` protocol message from the server.
+
+        Note that the `Reader` task blocks until first INFO is received
+        when started, so a typical use case is to:
+        - start the `Reader` task
+        - upgrade to TLS if needed
+        - send the `CONNECT` protocol message
+        - send the `PING` protocol message
+        - wait until the client is connected
+
+        Example:
+
+        ```python
+        async with create_task_group() as tg:
+            await tg.start(reader)
+            await client.connect()
+            await client.ping()
+            await reader.wait_until_connected()
+        ```
+        """
         if not self._connected_event:
             raise RuntimeError("Reader not started")
         await self._connected_event.wait()
@@ -40,7 +80,14 @@ class Reader:
     async def __call__(
         self, task_status: TaskStatus[None] = TASK_STATUS_IGNORED
     ) -> None:
+        """Execute the `Reader` task.
+
+        This method will return when a `ClosedEvent` is received.
+        """
+        # Create the connected event
         self._connected_event = Event()
+        # Enter infinite loop
+        # Exit when a ClosedEvent is received.
         while True:
             # If there is data to send, send it
             if data_to_send := self.protocol.data_to_send():
@@ -48,6 +95,7 @@ class Reader:
 
             # Process events
             for event in self.protocol.events_received():
+                # MSG or HMSG protocol messages
                 if event.type == EventType.MSG:
                     msg_ = Msg(client=self.subscriptions.client, proto=event.body)
                     try:
@@ -56,32 +104,37 @@ class Reader:
                         pass
                     continue
 
+                # PONG protocol message (except the first one)
                 if event.type == EventType.PONG:
                     if self.pending_pongs:
                         self.pending_pongs.pop(0).set()
                     continue
 
+                # INFO protocol message (except the first one)
                 if event.type == EventType.INFO:
                     continue
 
+                # ERROR protocol message
+                if event.type == EventType.ERROR:
+                    error = event.body
+                    if error.is_recoverable():
+                        continue
+                    raise NatsServerError(error.message)
+
+                # First INFO protocol message
                 if event.type == EventType.CONNECT_REQUEST:
                     self._info_received = True
                     task_status.started()
                     continue
 
+                # First PONG protocol message
                 if event.type == EventType.CONNECTED:
                     self._connected_event.set()
                     continue
 
-                if event.type == EventType.ERROR:
-                    error = event.body
-                    # If the error is recoverable, we can continue
-                    if error.is_recoverable():
-                        continue
-                    raise NatsServerError(error.message)
-
+                # Exit the loop
                 if event.type == EventType.CLOSED:
-                    raise ConnectionClosedError
+                    return
 
             # Read more data
             if data := await self._read_more():
@@ -93,7 +146,6 @@ class Reader:
                 self.protocol.receive_eof_from_server()
             return None
 
-        # Read more data
         try:
             data_received = await self.transport.read(self.read_buffer_size)
         except TransportError:
