@@ -8,14 +8,12 @@ from typing import Awaitable, Callable, overload
 from anyio import (
     TASK_STATUS_IGNORED,
     Event,
-    WouldBlock,
     create_memory_object_stream,
     create_task_group,
     fail_after,
     sleep,
 )
 from anyio.abc import TaskGroup, TaskStatus
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from exceptiongroup import ExceptionGroup
 
 from pynats.aio.msg import Msg
@@ -47,26 +45,63 @@ class Client(ClientStateMixin):
         self._task_group_or_none: TaskGroup | None = None
         self._closed_event_or_none: Event | None = None
         self._cancel_event_or_none: Event | None = None
-        self._reconnect_rcv_stream_or_none: MemoryObjectReceiveStream[
-            None
-        ] | None = None
-        self._reconnect_send_stream_or_none: MemoryObjectSendStream[None] | None = None
         # Attributes used during a connection lifetime
         self._current_connection_or_none: Connection | None = None
 
-    def reset(self) -> None:
-        """Reset the client state."""
-        self._closed_event_or_none = None
-        self._task_group_or_none = None
-        self._cancel_event_or_none = None
-        self._current_connection_or_none = None
-        self._reconnect_rcv_stream_or_none = None
-        self._reconnect_send_stream_or_none = None
-        self._pending_pongs.clear()
-        self._pending_buffer.clear()
-        self._subscriptions.clear()
-        self._protocol._reset()
-        super().reset()
+    def __repr__(self) -> str:
+        return f"<nats.aio.client.Client status={self.status.name}>"
+
+    #############################
+    # Public API                #
+    #############################
+
+    async def __aenter__(self) -> Client:
+        """Enter the async context."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        """Exit the async context."""
+        await self.close()
+
+    async def connect(self) -> None:
+        """Connect to the server."""
+        # Allow a cancelled client to be reconnected
+        if self.is_cancelled():
+            self._reset()
+        # Open the exit stack first
+        # All resources will be opened using the exit stack,
+        # in case of an error, all resources will be closed
+        await self._exit_stack.__aenter__()
+        # Callbacks are called in reverse order
+        # Initialize the closed event
+        self._closed_event_or_none = Event()
+        self._cancel_event_or_none = Event()
+        self._exit_stack.callback(self._closed_event_or_none.set)
+        # Create a new task group
+        self._task_group_or_none = await self._exit_stack.enter_async_context(
+            create_task_group()
+        )
+        # Initialize the reconnect stream
+        (
+            self._reconnect_send_stream_or_none,
+            self._reconnect_rcv_stream_or_none,
+        ) = create_memory_object_stream[None](max_buffer_size=1)
+        self._exit_stack.callback(self._reconnect_send_stream_or_none.close)
+        self._exit_stack.callback(self._reconnect_rcv_stream_or_none.close)
+
+        # Kick-off the reconnect loop
+        await self._task_group_or_none.start(self._reconnect_task)
+
+    async def close(self) -> None:
+        """Close the connection.
+
+        This method is blocking and will wait for the connection to
+        be closed.
+        """
+        # Mark client as cancelled
+        self._cancel()
+        await self._exit_stack.aclose()
 
     async def flush(self, timeout: float = 10) -> None:
         """Request a flush operation on the current connection
@@ -175,42 +210,30 @@ class Client(ClientStateMixin):
             pending_bytes_limit=pending_bytes_limit,
         )
 
-    async def connect(self) -> None:
-        """Connect to the server."""
-        # Allow a cancelled client to be reconnected
-        if self.is_cancelled():
-            self.reset()
-        # Open the exit stack first
-        # All resources will be opened using the exit stack,
-        # in case of an error, all resources will be closed
-        await self._exit_stack.__aenter__()
-        # Callbacks are called in reverse order
-        # Initialize the closed event
-        self._closed_event_or_none = Event()
-        self._cancel_event_or_none = Event()
-        self._exit_stack.callback(self._closed_event_or_none.set)
-        # Create a new task group
-        self._task_group_or_none = await self._exit_stack.enter_async_context(
-            create_task_group()
-        )
-        # Initialize the reconnect stream
-        (
-            self._reconnect_send_stream_or_none,
-            self._reconnect_rcv_stream_or_none,
-        ) = create_memory_object_stream[None](max_buffer_size=1)
-        self._exit_stack.callback(self._reconnect_send_stream_or_none.close)
-        self._exit_stack.callback(self._reconnect_rcv_stream_or_none.close)
+    async def wait_until_closed(self) -> None:
+        """Wait until the connection is closed."""
+        if not self._closed_event_or_none:
+            return None
+        await self._closed_event_or_none.wait()
 
-        # Kick-off the connection broadcast loop
-        self._task_group_or_none.start_soon(self._broadcast_connection_task)
-        # Kick-off the reconnect loop
-        await self._task_group_or_none.start(self._reconnect_task)
+    #############################
+    # State utils               #
+    #############################
 
-    def cancel(self) -> None:
-        """Cancel the connection.
+    def _reset(self) -> None:
+        self._closed_event_or_none = None
+        self._task_group_or_none = None
+        self._cancel_event_or_none = None
+        self._current_connection_or_none = None
+        self._reconnect_rcv_stream_or_none = None
+        self._reconnect_send_stream_or_none = None
+        self._pending_pongs.clear()
+        self._pending_buffer.clear()
+        self._subscriptions.clear()
+        self._protocol._reset()
+        super()._reset()
 
-        This method is non-blocking and will return immediately.
-        """
+    def _cancel(self) -> None:
         # Mark client as cancelled
         if self.status != ClientState.CLOSED:
             self.status = ClientState.CLOSING
@@ -220,26 +243,6 @@ class Client(ClientStateMixin):
         # Set cancel event
         if self._cancel_event_or_none:
             self._cancel_event_or_none.set()
-
-    async def close(self) -> None:
-        """Close the connection.
-
-        This method is blocking and will wait for the connection to
-        be closed.
-        """
-        # Mark client as cancelled
-        self.cancel()
-        await self._exit_stack.aclose()
-
-    async def wait_until_closed(self) -> None:
-        """Wait until the connection is closed."""
-        if not self._closed_event_or_none:
-            return None
-        await self._closed_event_or_none.wait()
-
-    #############################
-    # Connection utils          #
-    #############################
 
     def _ensure_cancel_event(self) -> Event:
         """Return the cancel event."""
@@ -252,18 +255,6 @@ class Client(ClientStateMixin):
         if not self._task_group_or_none:
             raise RuntimeError("Task group not initialized")
         return self._task_group_or_none
-
-    def _ensure_reconnect_rcv_stream(self) -> MemoryObjectReceiveStream[None]:
-        """Return the reconnect receive stream."""
-        if not self._reconnect_rcv_stream_or_none:
-            raise RuntimeError("Reconnect stream not initialized")
-        return self._reconnect_rcv_stream_or_none
-
-    def _ensure_reconnect_send_stream(self) -> MemoryObjectSendStream[None]:
-        """Return the reconnect send stream."""
-        if not self._reconnect_send_stream_or_none:
-            raise RuntimeError("Reconnect stream not initialized")
-        return self._reconnect_send_stream_or_none
 
     def _get_current_connection(self) -> Connection | None:
         """Get the current connection."""
@@ -285,55 +276,7 @@ class Client(ClientStateMixin):
         return await waiter.wait()
 
     #############################
-    # I/O helpers               #
-    #############################
-
-    async def _write_to_pending_buffer(
-        self,
-        data: bytes,
-        force_flush: bool = False,
-        wait_flush: bool = False,
-        priority: bool = False,
-    ) -> None:
-        """Write bytes to the connection.
-
-        Args:
-            data: Bytes to write to the connection.
-            force_flush: Force a flush operation, but do not wait.
-            wait_flush: Force a flush operation and wait for it (takes precedence over force_flush)
-            priority: Add the data to the front of the buffer.
-        """
-        conn = self._get_current_connection()
-
-        if self._pending_buffer.can_fit(len(data)):
-            self._pending_buffer.append(data, priority=priority)
-            if force_flush or wait_flush:
-                if conn is None:
-                    conn = await self._wait_for_connection()
-                await conn.writer.flush(wait=wait_flush)
-                return
-            # If we have a connection, we can kick the flusher
-            # when it's empty
-            if conn and conn.writer.is_idle():
-                await conn.writer.flush(wait=False)
-            return
-
-        if conn is None:
-            conn = await self._wait_for_connection()
-
-        self._pending_buffer.append(data, priority=priority)
-
-        # Flush if the write queue is empty
-        if conn.writer.is_idle():
-            await conn.writer.flush(wait=wait_flush)
-            return
-        # Always flush if the buffer is full
-        if force_flush or self._pending_buffer.is_full():
-            await conn.writer.flush(wait=wait_flush)
-            return
-
-    #############################
-    # Protocol helpers          #
+    # Operations helpers        #
     #############################
 
     async def _subscribe_iter(
@@ -422,6 +365,50 @@ class Client(ClientStateMixin):
         data = self._protocol.publish(subject, reply or "", payload or b"", headers)
         await self._write_to_pending_buffer(data)
 
+    async def _write_to_pending_buffer(
+        self,
+        data: bytes,
+        force_flush: bool = False,
+        wait_flush: bool = False,
+        priority: bool = False,
+    ) -> None:
+        """Write bytes to the connection.
+
+        Args:
+            data: Bytes to write to the connection.
+            force_flush: Force a flush operation, but do not wait.
+            wait_flush: Force a flush operation and wait for it (takes precedence over force_flush)
+            priority: Add the data to the front of the buffer.
+        """
+        conn = self._get_current_connection()
+
+        if self._pending_buffer.can_fit(len(data)):
+            self._pending_buffer.append(data, priority=priority)
+            if force_flush or wait_flush:
+                if conn is None:
+                    conn = await self._wait_for_connection()
+                await conn.writer.flush(wait=wait_flush)
+                return
+            # If we have a connection, we can kick the flusher
+            # when it's empty
+            if conn and conn.writer.is_idle():
+                await conn.writer.flush(wait=False)
+            return
+
+        if conn is None:
+            conn = await self._wait_for_connection()
+
+        self._pending_buffer.append(data, priority=priority)
+
+        # Flush if the write queue is empty
+        if conn.writer.is_idle():
+            await conn.writer.flush(wait=wait_flush)
+            return
+        # Always flush if the buffer is full
+        if force_flush or self._pending_buffer.is_full():
+            await conn.writer.flush(wait=wait_flush)
+            return
+
     #############################
     # Long running tasks        #
     #############################
@@ -431,10 +418,6 @@ class Client(ClientStateMixin):
     ) -> None:
         """Reconnect to the server."""
         tg = self._ensure_task_group()
-        reconnect_stream = self._ensure_reconnect_send_stream()
-        # cancel_event = self._ensure_cancel_event()
-        # Boolean flag to keep track whether task is considered as started or not
-        self.status = ClientState.CONNECTING
         # Start the reconnect loop
         while True:
             # Exit the loop if we're closing the client
@@ -444,23 +427,15 @@ class Client(ClientStateMixin):
             # Take a server from the pool
             server = self._protocol.select_server()
 
-            # First connection
-            if self.status == ClientState.CREATED:
-                self.status = ClientState.CONNECTING
-            # First connection but not first attempt
-            elif self.status == ClientState.CONNECTING:
-                pass
-            # Reconnection
-            elif self.status == ClientState.DISCONNECTED:
+            if server.is_connection_attempt_a_reconnect():
                 self.status = ClientState.RECONNECTING
-
             else:
-                raise RuntimeError(f"Invalid client state: {self.status}")
+                self.status = ClientState.CONNECTING
 
             # Handle reconnect
             if self.status == ClientState.RECONNECTING:
-                # We should wait for a bit in case of reconnect
                 await sleep(1)
+                # We should wait for a bit in case of reconnect
 
             try:
                 async with create_task_group() as tg:
@@ -483,15 +458,12 @@ class Client(ClientStateMixin):
                         if self.status == ClientState.CONNECTING:
                             self.status = ClientState.CONNECTED
                             task_status.started()
-                            # Indicate that a new connection is available
-                            try:
-                                reconnect_stream.send_nowait(None)
-                            except WouldBlock:
-                                # If the reconnect stream is full, we can ignore
-                                # because receivers will be notified the same way
-                                # (we do not send the connection itself throuh the
-                                # stream but only a None sentinel).
-                                pass
+                            # Broadcast connection event
+                            waiters = list(self._waiters)
+                            self._waiters.clear()
+                            for waiter in waiters:
+                                waiter.set(current_connection)
+
             except ExceptionGroup:
                 if self.is_cancelled():
                     tg.cancel_scope.cancel()
@@ -502,36 +474,6 @@ class Client(ClientStateMixin):
             if self.is_cancelled():
                 tg.cancel_scope.cancel()
                 return
-
-    async def _broadcast_connection_task(self) -> None:
-        """Broadcast connection events to all subscriptions."""
-        reconnect_stream = self._ensure_reconnect_rcv_stream()
-        while True:
-            await reconnect_stream.receive()
-            conn = self._get_current_connection()
-            if conn is None:
-                continue
-            # Broadcast connection event
-            waiters = list(self._waiters)
-            self._waiters.clear()
-            for waiter in waiters:
-                waiter.set(conn)
-
-    #############################
-    # Dundler methods           #
-    #############################
-
-    def __repr__(self) -> str:
-        return f"<nats.aio.client.Client status={self.status.name}>"
-
-    async def __aenter__(self) -> Client:
-        """Enter the async context."""
-        await self.connect()
-        return self
-
-    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        """Exit the async context."""
-        await self.close()
 
 
 class _Waiter:

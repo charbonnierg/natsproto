@@ -6,7 +6,19 @@
 
 This project aims at providing a [sans-IO protocol](https://sans-io.readthedocs.io/) implementation for NATS.
 
-If you don't want to read the `README`, you can go straight to [`connection_state.py`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/protocol/connection_state.py) and [`connection.py`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/protocol/connection.py) modules.
+If you don't want to read the `README`, you can go straight to :
+
+- [`connection_state.py`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/protocol/connection_state.py) and [`connection.py`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/protocol/connection.py) modules to see how the sans-io protocol is implemented.
+
+- [`aio.connection.reader`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/aio/connection/reader.py): to see how an async reader is implemented on top of the sans-io protocol
+
+- [`aio.connection.writer`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/aio/connection/writer.py): to see how an async writer is implemented on top of the sans-io protocol
+
+- [`aio.connection.monitor`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/aio/connection/monitor.py): to see how a PING monitor is implemented on top of the sans-io protocol
+
+- [`aio.connection.connection`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/aio/connection/connection.py): to see how a single NATS connection lifetime is implemented on top of the sans-io protocol.
+
+- [`aio.client`](https://github.com/charbonnierg/natsproto/blob/main/src/pynats/aio/client.py): to see how an async client is implemented on top of all other modules cited above.
 
 ### Introduction to sans-IO
 

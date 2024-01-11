@@ -23,6 +23,14 @@ class Server:
         self.did_connect = False
         self.info: Info | None = None
 
+    def is_connection_attempt_a_reconnect(self) -> bool:
+        """Check if the connection attempt is a reconnect.
+
+        Returns:
+            True if the server has already connected, else False
+        """
+        return self.did_connect
+
     def can_attempt_connect(self, limit: int) -> bool:
         """Check if the server can attempt to connect.
 

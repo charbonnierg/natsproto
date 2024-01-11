@@ -47,6 +47,6 @@ class ClientStateMixin:
         """Return True if the client is reconnecting."""
         return self.status == ClientState.RECONNECTING
 
-    def reset(self) -> None:
+    def _reset(self) -> None:
         """Reset the client state."""
         self.status = ClientState.CREATED
