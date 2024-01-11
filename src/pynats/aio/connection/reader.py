@@ -42,23 +42,12 @@ class Reader:
     ) -> None:
         self._connected_event = Event()
         while True:
-            # Read events from the parser
-            events = self.protocol.events_received()
-
-            # If there is no more event in the parser,
-            # read more data from the transport and continue
-            if not events:
-                if data := await self._read_more():
-                    self.protocol.receive_data_from_server(data)
-                continue
-
             # If there is data to send, send it
-            data_to_send = self.protocol.data_to_send()
-            if data_to_send:
+            if data_to_send := self.protocol.data_to_send():
                 await self._reply(data_to_send)
 
             # Process events
-            for event in events:
+            for event in self.protocol.events_received():
                 if event.type == EventType.MSG:
                     msg_ = Msg(client=self.subscriptions.client, proto=event.body)
                     try:
@@ -93,6 +82,10 @@ class Reader:
 
                 if event.type == EventType.CLOSED:
                     raise ConnectionClosedError
+
+            # Read more data
+            if data := await self._read_more():
+                self.protocol.receive_data_from_server(data)
 
     async def _read_more(self) -> bytes | None:
         if self.transport.at_eof():

@@ -88,10 +88,3 @@ class Transport(abc.ABC):
         Returns if underlying transport reader is at eof.
         """
         pass
-
-    @abc.abstractmethod
-    def __bool__(self) -> bool:
-        """
-        Returns if the transport was initialized, either by calling connect of connect_tls.
-        """
-        pass

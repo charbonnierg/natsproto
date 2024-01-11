@@ -110,6 +110,3 @@ class TcpTransport(Transport):
 
     def at_eof(self) -> bool:
         return self.reader.at_eof()
-
-    def __bool__(self) -> bool:
-        return bool(self._io_writer) and bool(self._io_reader)
