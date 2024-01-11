@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pynats"
+authors = [{ name = "Guillaume Charbonnier", email = "gu.charbon@gmail.com" }]
+description = "NATS client for Python"
+dynamic = ["version"]
+readme = "README.md"
+license = { text = "Apache 2 License" }
+requires-python = ">=3.8"
+classifiers = [
+  'License :: OSI Approved :: Apache Software License',
+  'Intended Audience :: Developers',
+  'Programming Language :: Python',
+  'Programming Language :: Python :: 3',
+  'Programming Language :: Python :: 3.8',
+  'Programming Language :: Python :: 3.9',
+  'Programming Language :: Python :: 3.10',
+  'Programming Language :: Python :: 3.11',
+  'Programming Language :: Python :: 3.12',
+]
+
+[project.optional-dependencies]
+nkeys = ['nkeys']
+aiohttp = ['aiohttp']
+fast_parse = ['fast-mail-parser']
+
+[tool.setuptools]
+zip-safe = true
+
+[tool.setuptools.dynamic]
+version = { attr = "pynats.__init__.__version__" }
+
+[tool.isort]
+profile = "black"
+known_first_party = "pynats"
