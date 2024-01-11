@@ -135,11 +135,7 @@ class Connection:
         client: Client,
         server: Server,
     ) -> Connection:
-        """Create a new connection to the server.
-
-        The created connection is saved as the current connection
-        but is not started.
-        """
+        """Create a new connection to be used with given server."""
         transport = transport_factory(
             server.uri,
             client.options.rcv_buffer_size,
