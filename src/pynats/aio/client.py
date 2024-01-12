@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import uuid
 from timeit import default_timer
 from typing import Awaitable, Callable, overload
@@ -18,6 +19,10 @@ from exceptiongroup import ExceptionGroup
 
 from pynats.aio.msg import Msg
 from pynats.errors import ConnectionClosedError
+from pynats.protocol.errors import (
+    ConnectionServerPoolEmpty,
+    ConnectionStateTransitionError,
+)
 
 from ..core.client_state import ClientState, ClientStateMixin
 from ..protocol import ClientOptions, ConnectionProtocol
@@ -25,6 +30,8 @@ from ..protocol.constant import PING_CMD
 from .connection import Connection
 from .subscription import QueueSubscriptionIterator, QueueSubscriptionWorker
 from .subscription_registry import AsyncSubscriptionRegistry
+
+logger = logging.getLogger("pynats.aio.client")
 
 
 class Client(ClientStateMixin):
@@ -44,7 +51,6 @@ class Client(ClientStateMixin):
         self._waiters: list[_Waiter] = []
         self._task_group_or_none: TaskGroup | None = None
         self._closed_event_or_none: Event | None = None
-        self._cancel_event_or_none: Event | None = None
         # Attributes used during a connection lifetime
         self._current_connection_or_none: Connection | None = None
 
@@ -76,7 +82,6 @@ class Client(ClientStateMixin):
         # Callbacks are called in reverse order
         # Initialize the closed event
         self._closed_event_or_none = Event()
-        self._cancel_event_or_none = Event()
         self._exit_stack.callback(self._closed_event_or_none.set)
         # Create a new task group
         self._task_group_or_none = await self._exit_stack.enter_async_context(
@@ -223,7 +228,6 @@ class Client(ClientStateMixin):
     def _reset(self) -> None:
         self._closed_event_or_none = None
         self._task_group_or_none = None
-        self._cancel_event_or_none = None
         self._current_connection_or_none = None
         self._reconnect_rcv_stream_or_none = None
         self._reconnect_send_stream_or_none = None
@@ -240,15 +244,6 @@ class Client(ClientStateMixin):
         # Ask the current connection to close
         if self._current_connection_or_none:
             self._current_connection_or_none.close_soon()
-        # Set cancel event
-        if self._cancel_event_or_none:
-            self._cancel_event_or_none.set()
-
-    def _ensure_cancel_event(self) -> Event:
-        """Return the cancel event."""
-        if not self._cancel_event_or_none:
-            raise RuntimeError("Cancel event not initialized")
-        return self._cancel_event_or_none
 
     def _ensure_task_group(self) -> TaskGroup:
         """Return the task group."""
@@ -416,74 +411,100 @@ class Client(ClientStateMixin):
     async def _reconnect_loop(
         self, task_status: TaskStatus[None] = TASK_STATUS_IGNORED
     ) -> None:
-        """Reconnect to the server."""
+        """Wrapper around the reconnect loop.
+
+        This wrapper is used to catch any exception that may be raised
+        by the reconnect loop.
+        """
         parent_tg = self._ensure_task_group()
-        # Start the reconnect loop
+        started = False
         while True:
             # Exit the loop if we're closing the client
             if self.is_cancelled():
-                return
-
-            # Take a server from the pool
-            server = self._protocol.select_server()
-
-            # Update client status
-            if server.is_connection_attempt_a_reconnect():
-                self.status = ClientState.RECONNECTING
-            else:
-                self.status = ClientState.CONNECTING
-
-            # Apply reconnect delay
-            if self.status == ClientState.RECONNECTING:
-                await sleep(1)
-                # We should wait for a bit in case of reconnect
-
-            # Create a new connection
-            current_connection = Connection.create(self, server)
-            self._current_connection_or_none = current_connection
-
-            # Kick-off the connection task
-            try:
-                async with create_task_group() as tg:
-                    # Apply a timeout to the connection
-                    # This includes the time to connect and the time to
-                    # setup subscriptions.
-                    with fail_after(self.options.connect_timeout):
-                        # Wait for the connection to be established
-                        await tg.start(current_connection)
-                        # Create request/reply subscription
-                        await self._request_reply._init_request_sub()
-                        # Recreate all subscriptions
-                        for sub in self._subscriptions._subs.values():
-                            # Skip request/reply subscription
-                            if sub.sid() == self._request_reply.sid():
-                                continue
-                            await self._send_subscribe(
-                                sub.subject(), sub.queue(), sub.sid()
-                            )
-                        # Notify that task is started once the connection is
-                        # established
-                        if self.status == ClientState.CONNECTING:
-                            self.status = ClientState.CONNECTED
-                            waiters, self._waiters = self._waiters, []
-                            for waiter in waiters:
-                                waiter.set(current_connection)
-                            task_status.started()
-
-            except ExceptionGroup:
-                if self.is_cancelled():
-                    if not parent_tg.cancel_scope.cancel_called:
-                        parent_tg.cancel_scope.cancel()
-                    self.status = ClientState.CLOSED
-                    return
-                self.status = ClientState.DISCONNECTED
-                continue
-
-            if self.is_cancelled():
                 if not parent_tg.cancel_scope.cancel_called:
                     parent_tg.cancel_scope.cancel()
-                self.status = ClientState.CLOSED
+                logger.warning("exiting reconnect loop due to client cancellation")
+                if not started:
+                    task_status.started()
                 return
+            try:
+                async with create_task_group() as tg:
+                    await tg.start(self._connection_lifetime)
+                    logger.warning("connection started")
+            except ExceptionGroup as exc_group:
+                for exc in exc_group.exceptions:
+                    if isinstance(
+                        exc, (ConnectionServerPoolEmpty, ConnectionStateTransitionError)
+                    ):
+                        if self._closed_event_or_none:
+                            self._closed_event_or_none.set()
+                        raise
+            else:
+                logger.warning("connection lifetime ended")
+                continue
+
+    async def _connection_lifetime(
+        self, task_status: TaskStatus[None] = TASK_STATUS_IGNORED
+    ) -> None:
+        """Reconnect to the server."""
+
+        logger.warning("selecting server")
+        # Take a server from the pool
+        await sleep(1)
+        server = self._protocol.select_server()
+        logger.warning("selected server %s", server.uri.geturl())
+
+        # Update client status
+        if server.is_connection_attempt_a_reconnect():
+            logger.warning(
+                "reconnecting to server %s (%d attempt)",
+                server.uri.geturl(),
+                server.reconnect_attempts,
+            )
+            self.status = ClientState.RECONNECTING
+        else:
+            logger.warning("connecting to server %s", server.uri.geturl())
+            self.status = ClientState.CONNECTING
+
+        # Apply reconnect delay
+        if self.status == ClientState.RECONNECTING:
+            logger.warning("waiting for 1 second before reconnecting")
+            await sleep(1)
+            # We should wait for a bit in case of reconnect
+
+        logger.warning("creating new connection")
+        # Create a new connection
+        current_connection = Connection.create(self, server)
+        self._current_connection_or_none = current_connection
+
+        # Kick-off the connection task
+        async with create_task_group() as tg:
+            # Apply a timeout to the connection
+            with fail_after(self.options.connect_timeout):
+                # Wait for the connection to be established
+                logger.warning("starting connection task")
+                await tg.start(current_connection)
+                logger.warning("connection established")
+                # Create request/reply subscription
+                logger.warning("creating request/reply subscription mutex")
+                await self._request_reply._init_request_sub()
+                task_status.started()
+                # Notify that task is started once the connection is
+                # established
+                logger.warning("notifying waiters that connection is established")
+                self.status = ClientState.CONNECTED
+                waiters, self._waiters = self._waiters, []
+                for waiter in waiters:
+                    waiter.set(current_connection)
+                logger.warning("notiyin reconnect loop started")
+
+            # Recreate all subscriptions
+            logger.warning("recreating client subscriptions")
+            for sub in self._subscriptions._subs.values():
+                # Skip request/reply subscription
+                if sub.sid() == self._request_reply.sid():
+                    continue
+                await self._send_subscribe(sub.subject(), sub.queue(), sub.sid())
 
 
 class _Waiter:

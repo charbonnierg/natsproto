@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from anyio import TASK_STATUS_IGNORED, Event, create_task_group
@@ -16,6 +17,9 @@ from .writer import Writer
 
 if TYPE_CHECKING:
     from ..client import Client
+
+
+logger = logging.getLogger("pynats.aio.connection")
 
 
 class Connection:
@@ -54,21 +58,36 @@ class Connection:
         """Run a single connection task for its entire lifetime."""
 
         self.cancel_event = Event()
+        logger.warning("opening transport")
         await self._open_transport()
+        logger.warning("transport opened")
         try:
             async with create_task_group() as tg:
+                logger.warning("starting reader task")
                 await tg.start(self.reader)
+                logger.warning("upgrading transport to TLS if required")
                 await self._upgrade_transport_if_needed()
+                logger.warning("sending CONNECT command")
                 self.transport.write(self.protocol.connect())
+                logger.warning("sending PING command")
                 self.transport.write(self.protocol.ping())
                 await self.transport.drain()
+                logger.warning("waiting for reader to be connected")
                 await self.reader.wait_until_connected()
+                logger.warning("starting writer")
                 await tg.start(self.writer)
+                logger.warning("starting monitor")
                 await tg.start(self.monitor)
+                logger.warning("marking connection as connected")
                 task_status.started()
+                logger.warning("waiting for cancel event")
                 await self.cancel_event.wait()
+                logger.warning("cancel event received")
                 tg.cancel_scope.cancel()
         finally:
+            if not self.protocol.is_cancelled():
+                self.protocol.mark_as_closing()
+            logger.warning("closing transport", exc_info=True)
             await self._close_transport()
             # FIXME: This is a bit weird, it's the only place in client
             # where we call .mark_as_something() on the protocol
@@ -78,17 +97,19 @@ class Connection:
             # state, but needs to be in a WAITING_FOR_SERVER_SELECTION
             # state in order to reconnect. So for now, we mark it
             # manually here.
-            if not self.protocol.is_cancelled():
-                self.protocol.mark_as_closing()
+            logger.warning("marking connection as waiting for server selection")
             self.protocol.mark_as_closed()
             self.protocol.mark_as_waiting_for_server_selection()
 
     async def _close_transport(self) -> None:
-        with self.pending_buffer.borrow() as pending:
-            self.transport.writelines(pending)
-            await self.transport.drain()
-        self.transport.close()
-        await self.transport.wait_closed()
+        try:
+            with self.pending_buffer.borrow() as pending:
+                self.transport.writelines(pending)
+                await self.transport.drain()
+            self.transport.close()
+            await self.transport.wait_closed()
+        except Exception:
+            pass
 
     async def _open_transport(self) -> None:
         # Check if a TLS upgrade is required

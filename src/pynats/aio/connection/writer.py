@@ -104,15 +104,13 @@ class Writer:
 
         while True:
             if self.protocol.is_cancelled():
-                return
+                raise ConnectionClosedError
 
             try:
                 evt = await self.flusher_queue_rcv.receive()
                 self.flush_queue_pending -= 1
             except (EndOfStream, BrokenResourceError):
-                if not self.protocol.is_cancelled():
-                    self.protocol.receive_eof_from_client()
-                return
+                raise ConnectionClosedError
 
             if self.pending_buffer.is_empty():
                 continue

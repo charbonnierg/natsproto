@@ -3,7 +3,7 @@ from __future__ import annotations
 from anyio import TASK_STATUS_IGNORED, sleep
 from anyio.abc import TaskStatus
 
-from ...errors import ConnectionStaleError
+from ...errors import ConnectionClosedError, ConnectionStaleError
 from .writer import Writer
 
 
@@ -44,12 +44,12 @@ class Monitor:
         # Enter the loop
         while True:
             if self.protocol.is_cancelled():
-                return
+                raise ConnectionClosedError
 
             await sleep(self.ping_interval)
 
             if self.protocol.is_cancelled():
-                return
+                raise ConnectionClosedError
 
             self._check()
 

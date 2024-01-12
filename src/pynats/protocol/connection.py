@@ -98,6 +98,10 @@ class ConnectionProtocol(ConnectionStateMixin):
         self._received_eof = False
         self._outstanding_pings = 0
         self._subscriptions.clear()
+        self._events = []
+        self._data_to_send = b""
+        self._parser = self.__parse__()
+        next(self._parser)
 
     def get_current_server(self) -> Server | None:
         """Returns the current server."""
@@ -127,11 +131,8 @@ class ConnectionProtocol(ConnectionStateMixin):
         Returns:
             The next server to connect to
         """
-        # Raise an error if we're cancelled
         if not self.is_waiting_for_server_selection():
-            raise ConnectionStateTransitionError(
-                "server can only be selected when connection is closed"
-            )
+            raise ConnectionStateTransitionError
         # Reset the state
         self._reset()
         # Select the next server from pool
@@ -318,6 +319,10 @@ class ConnectionProtocol(ConnectionStateMixin):
             raise ConnectionNotEstablishedError
         self._received_eof = True
         self.mark_as_closing()
+        try:
+            next(self._parser)
+        except StopIteration:
+            pass
 
     def receive_eof_from_client(self) -> None:
         """Close the connection from client side.
@@ -327,6 +332,10 @@ class ConnectionProtocol(ConnectionStateMixin):
         """
         self._received_eof = True
         self.mark_as_closing()
+        try:
+            next(self._parser)
+        except StopIteration:
+            pass
 
     def events_received(self) -> list[Event]:
         events, self._events = self._events, []
@@ -359,10 +368,10 @@ class ConnectionProtocol(ConnectionStateMixin):
             # `receive_data` method before continuing.
             if not self._receive_buffer:
                 # Exit if closed
-                if self.is_cancelled():
+                if self._received_eof:
                     if not self._closed_event_sent:
-                        self._closed_event_sent = True
                         self.mark_as_closed()
+                        self._closed_event_sent = True
                         self._events.append(ClosedEvent())
                         yield None
                     return

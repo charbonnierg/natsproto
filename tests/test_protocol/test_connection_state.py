@@ -358,7 +358,7 @@ class TestConnectionStateMixin:
             (ConnectionState.WAITING_FOR_CLIENT_PING, None),
             (ConnectionState.WAITING_FOR_SERVER_PONG, None),
             (ConnectionState.CONNECTED, None),
-            (ConnectionState.CLOSING, ConnectionStateTransitionError),
+            (ConnectionState.CLOSING, None),
             (ConnectionState.CLOSED, ConnectionStateTransitionError),
         ],
     )

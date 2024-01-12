@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from logging import getLogger
+
 from anyio import TASK_STATUS_IGNORED, Event
 from anyio.abc import TaskStatus
 
@@ -8,6 +10,8 @@ from ...protocol import ConnectionProtocol, EventType
 from ..msg import Msg
 from ..subscription_registry import AsyncSubscriptionRegistry
 from ..transport import Transport
+
+logger = getLogger("pynats.aio.reader")
 
 
 class Reader:
@@ -143,22 +147,27 @@ class Reader:
 
                 # Exit the loop
                 if event.type == EventType.CLOSED:
+                    logger.warning("exiting reader task due to connection closed")
                     raise ConnectionClosedError
 
             # Read more data
             if data := await self._read_more():
+                logger.warning(f"received data from server: {data!r}")
                 self.protocol.receive_data_from_server(data)
+            else:
+                logger.warning("received EOF from server")
+                self.protocol.receive_eof_from_server()
 
     async def _read_more(self) -> bytes | None:
         if self.transport.at_eof():
-            if not self.protocol.is_closed():
+            if not self.protocol._received_eof:
                 self.protocol.receive_eof_from_server()
             return None
 
         try:
             data_received = await self.transport.read()
         except TransportError:
-            if not self.protocol.is_closed():
+            if not self.protocol._received_eof:
                 self.protocol.receive_eof_from_server()
             return None
 
@@ -169,5 +178,5 @@ class Reader:
             self.transport.write(data_to_send)
             await self.transport.drain()
         except TransportError:
-            if not self.protocol.is_closed():
+            if not self.protocol._received_eof:
                 self.protocol.receive_eof_from_server()

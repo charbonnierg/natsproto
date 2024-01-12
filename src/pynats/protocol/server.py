@@ -55,7 +55,7 @@ class Server:
             return True
         if limit == 0:
             return False
-        return limit > self.reconnect_attempts
+        return self.reconnect_attempts < limit
 
     def increment_connect_attempts(self) -> None:
         self.connect_attempts += 1

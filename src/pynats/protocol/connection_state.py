@@ -224,10 +224,7 @@ class ConnectionStateMixin:
 
     def mark_as_closing(self) -> None:
         """Mark the connection as closing."""
-        if (
-            self.status == ConnectionState.CLOSED
-            or self.status == ConnectionState.CLOSING
-        ):
+        if self.status == ConnectionState.CLOSED:
             raise ConnectionStateTransitionError
         # Mark as closed if we're not connected yet
         self.status = ConnectionState.CLOSING
