@@ -104,7 +104,7 @@ class Writer:
 
         while True:
             if self.protocol.is_cancelled():
-                raise ConnectionClosedError
+                return
 
             try:
                 evt = await self.flusher_queue_rcv.receive()

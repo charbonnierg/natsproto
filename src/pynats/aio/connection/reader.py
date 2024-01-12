@@ -154,9 +154,12 @@ class Reader:
             if data := await self._read_more():
                 logger.warning(f"received data from server: {data!r}")
                 self.protocol.receive_data_from_server(data)
-            else:
-                logger.warning("received EOF from server")
-                self.protocol.receive_eof_from_server()
+                continue
+
+            # EOF received
+            logger.warning("received EOF from server")
+            self.protocol.receive_eof_from_server()
+            continue
 
     async def _read_more(self) -> bytes | None:
         if self.transport.at_eof():

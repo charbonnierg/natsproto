@@ -88,18 +88,20 @@ class Connection:
             if not self.protocol.is_cancelled():
                 self.protocol.mark_as_closing()
             logger.warning("closing transport", exc_info=True)
-            await self._close_transport()
-            # FIXME: This is a bit weird, it's the only place in client
-            # where we call .mark_as_something() on the protocol
-            # instance. All other state transitions are handled
-            # within the protocol itself
-            # The problem is that connection protocol ends in a CLOSED
-            # state, but needs to be in a WAITING_FOR_SERVER_SELECTION
-            # state in order to reconnect. So for now, we mark it
-            # manually here.
-            logger.warning("marking connection as waiting for server selection")
-            self.protocol.mark_as_closed()
-            self.protocol.mark_as_waiting_for_server_selection()
+            try:
+                await self._close_transport()
+            finally:
+                # FIXME: This is a bit weird, it's the only place in client
+                # where we call .mark_as_something() on the protocol
+                # instance. All other state transitions are handled
+                # within the protocol itself
+                # The problem is that connection protocol ends in a CLOSED
+                # state, but needs to be in a WAITING_FOR_SERVER_SELECTION
+                # state in order to reconnect. So for now, we mark it
+                # manually here.
+                logger.warning("marking connection as waiting for server selection")
+                self.protocol.mark_as_closed()
+                self.protocol.mark_as_waiting_for_server_selection()
 
     async def _close_transport(self) -> None:
         try:
