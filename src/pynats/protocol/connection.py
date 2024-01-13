@@ -346,10 +346,7 @@ class ConnectionProtocol(ConnectionStateMixin):
             raise ConnectionNotEstablishedError
         self._received_eof = True
         self.mark_as_closing()
-        try:
-            next(self._parser)
-        except StopIteration:
-            pass
+        next(self._parser)
 
     def receive_eof_from_client(self) -> None:
         """Close the connection from client side.
@@ -359,10 +356,7 @@ class ConnectionProtocol(ConnectionStateMixin):
         """
         self._received_eof = True
         self.mark_as_closing()
-        try:
-            next(self._parser)
-        except StopIteration:
-            pass
+        next(self._parser)
 
     def events_received(self) -> list[Event]:
         events, self._events = self._events, []

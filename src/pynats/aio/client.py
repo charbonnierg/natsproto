@@ -436,13 +436,7 @@ class Client(ClientStateMixin):
                         started = True
                         task_status.started()
             except ExceptionGroup as exc_group:
-                for exc in exc_group.exceptions:
-                    if isinstance(
-                        exc, (ConnectionServerPoolEmpty, ConnectionStateTransitionError)
-                    ):
-                        if self._closed_event_or_none:
-                            self._closed_event_or_none.set()
-                        raise
+                _unwrap_err(exc_group)
             else:
                 logger.warning("connection lifetime ended")
                 continue
@@ -473,8 +467,11 @@ class Client(ClientStateMixin):
         if self.status == ClientState.RECONNECTING:
             logger.warning("waiting for 1 second before reconnecting")
             await sleep(1)
-            # We should wait for a bit in case of reconnect
 
+        elif self.status == ClientState.CONNECTING:
+            if server.connect_attempts > 1:
+                logger.warning("waiting for 1 second before connecting")
+                await sleep(1)
         logger.warning("creating new connection")
         # Create a new connection
         current_connection = Connection.create(self, server)
@@ -598,3 +595,13 @@ class _RequestReplyInbox:
         if self._sid is None:
             raise RuntimeError("Subscription not initialized")
         return self._sid
+
+
+def _unwrap_err(exc: ExceptionGroup) -> None:
+    for exc in exc.exceptions:
+        if isinstance(exc, (ConnectionServerPoolEmpty, ConnectionStateTransitionError)):
+            raise
+        if isinstance(exc, ExceptionGroup):
+            _unwrap_err(exc)
+        else:
+            logger.warning("exception in reconnect loop", exc_info=exc)

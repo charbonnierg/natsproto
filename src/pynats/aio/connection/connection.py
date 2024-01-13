@@ -59,7 +59,14 @@ class Connection:
 
         self.cancel_event = Event()
         logger.warning("opening transport")
-        await self._open_transport()
+        try:
+            await self._open_transport()
+        except BaseException:
+            self.protocol.mark_as_closing()
+            self.protocol.mark_as_closed()
+            logger.warning("marking connection as waiting for server selection")
+            self.protocol.mark_as_waiting_for_server_selection()
+            raise
         logger.warning("transport opened")
         try:
             async with create_task_group() as tg:
@@ -87,7 +94,7 @@ class Connection:
         finally:
             if not self.protocol.is_cancelled():
                 self.protocol.mark_as_closing()
-            logger.warning("closing transport", exc_info=True)
+            logger.warning("closing transport")
             try:
                 await self._close_transport()
             finally:
