@@ -17,7 +17,41 @@ __version__ = "0.0.1"
 
 @dataclass
 class ClientOptions:
-    """Client options."""
+    """Client options.
+
+    Args:
+        `servers`: the list of servers to connect to. A connection is established
+            for a single server at a time.
+        `name`: the name of the client connection.
+        `connect_timeout`: the timeout in seconds for establishing a connection.
+        `max_connect_attempts`: the maximum number of attempts to establish a
+            connection for each server.
+        `max_reconnect_attempts`: the maximum number of attempts to reconnect for each
+            server.
+        `no_randomize`: whether to randomize the server pool.
+        `no_echo`: whether to disable echo.
+        `no_discovery`: whether to disable server discovery. When this is True, the
+            client will not attempt to reconnect to servers discovered through INFO
+            messages in case of a disconnect.
+        `verbose`: whether to enable verbose mode.
+        `pedantic`: whether to enable pedantic mode.
+        `max_control_line_size`: the maximum size of a control line.
+        `rcv_buffer_size`: the size of the receive buffer.
+        `pending_buffer_size`: the size of the pending buffer.
+        `ping_interval`: the interval in seconds to send ping messages.
+        `max_outstanding_pings`: the maximum number of outstanding pings before considering
+            the connection stale.
+        `tls_required`: whether TLS is required.
+        `tls_handshake_first`: whether to perform TLS handshake before receiving the first
+            INFO message.
+        `ssl_context`: the SSL context to use for TLS connections.
+        `username`: a callback providing username to use for authentication.
+        `password`: a callback providing password to use for authentication.
+        `token`: a callback providing a token to use for authentication.
+        `jwt_callback`: a callback to use for JWT authentication.
+        `nkey_callback`: a callback to use for NKey authentication.
+        `signature_callback`: a callback to use for signature authentication.
+    """
 
     # Server URLS
     servers: list[str] = field(default_factory=lambda: ["nats://localhost:4222"])
@@ -29,6 +63,7 @@ class ClientOptions:
     max_reconnect_attempts: int = 60
     no_randomize: bool = False
     no_echo: bool = False
+    no_discovery: bool = False
     verbose: bool = False
     pedantic: bool = False
     # Protocol parser
@@ -53,7 +88,14 @@ class ClientOptions:
     signature_callback: Callable[[str], str] | None = None
 
     def new_server_pool(self) -> ServerPool:
-        """Create a new server pool according to options."""
+        """Create a new server pool according to options.
+
+        Raises:
+            ValueError: if `servers` is empty or if `servers` is invalid.
+
+        Returns:
+            A new server pool instance.
+        """
 
         randomized = not self.no_randomize
         if not self.servers:
@@ -66,10 +108,25 @@ class ClientOptions:
         )
 
     def new_pending_buffer(self) -> PendingBuffer:
-        """Create a new pending buffer according to options."""
+        """Create a new pending buffer according to options.
+
+        Returns:
+            A new pending buffer instance.
+        """
         return PendingBuffer(max_size=self.pending_buffer_size)
 
     def verify_server_info(self, info: Info) -> None:
+        """Verify that the server info is compatible with the client options.
+
+        Args:
+            info: the server info.
+
+        Raises:
+            ValueError: if the server info is not compatible with the client options.
+
+        Returns:
+            None.
+        """
         if self.tls_required and not info.tls_available:
             raise ValueError(
                 "Profile requires TLS, but TLS is not available in the server"
@@ -92,6 +149,15 @@ class ClientOptions:
                 )
 
     def get_connect_opts(self, server: Server) -> ConnectOpts:
+        """Get the connect options for a server.
+
+        Raises:
+            ValueError: if the server info is not available or is not compatible with the
+                client options.
+
+        Returns:
+            The connect options to use with the server.
+        """
         info = server.info
         if info is None:
             raise ValueError("Server info is not available")

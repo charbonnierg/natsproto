@@ -24,7 +24,24 @@ class ServerPool:
         self.max_connect_attempts = max_connect_attempts
         self.max_reconnect_attempts = max_reconnect_attempts
         self.randomized = randomized
-        self.servers = {srv.uri.netloc: srv for srv in servers}
+        self.servers = {}
+        protocol: str | None = None
+        for server in servers:
+            server_protocol = server.uri.scheme
+            if protocol is None:
+                if server_protocol not in ("nats", "tls", "ws", "wss"):
+                    raise ValueError(
+                        "servers must use either `nats://`, `tls://`, `ws://` or `wss://`"
+                    )
+                protocol = server_protocol
+            elif protocol != server_protocol:
+                raise ValueError(
+                    "servers must all use the same url scheme (`nats://`, `tls://`, `ws://` or `wss://`)"
+                )
+            self.servers[server.uri.netloc] = server
+        if protocol is None:
+            raise ValueError("servers must not be empty")
+        self.protocol = protocol
         self._update_generator()
 
     def empty(self) -> bool:
@@ -98,6 +115,11 @@ class ServerPool:
             server = Server(uri)
         else:
             uri = server.uri
+        server_protocol = uri.scheme
+        if server_protocol != self.protocol:
+            raise ValueError(
+                f"server must use the same url scheme as the server pool (`{self.protocol}://`)"
+            )
         if uri.netloc in self.servers:
             return self.servers[uri.netloc]
         self.servers[uri.netloc] = server

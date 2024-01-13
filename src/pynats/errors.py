@@ -116,3 +116,15 @@ class NotJetStreamMsgError(NatsClientError):
 
 class NoReplySubjectError(NatsClientError):
     pass
+
+
+class MaxPayloadSizeExceededError(NatsClientError):
+    pass
+
+
+class InvalidServerUrlError(NatsClientError):
+    pass
+
+
+class InvalidSubjectError(NatsClientError):
+    pass

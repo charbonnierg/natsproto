@@ -425,12 +425,16 @@ class Client(ClientStateMixin):
                     parent_tg.cancel_scope.cancel()
                 logger.warning("exiting reconnect loop due to client cancellation")
                 if not started:
+                    started = True
                     task_status.started()
                 return
             try:
                 async with create_task_group() as tg:
                     await tg.start(self._connection_lifetime)
-                    logger.warning("connection started")
+                    if not started:
+                        logger.warning("connection started")
+                        started = True
+                        task_status.started()
             except ExceptionGroup as exc_group:
                 for exc in exc_group.exceptions:
                     if isinstance(
@@ -450,7 +454,6 @@ class Client(ClientStateMixin):
 
         logger.warning("selecting server")
         # Take a server from the pool
-        await sleep(1)
         server = self._protocol.select_server()
         logger.warning("selected server %s", server.uri.geturl())
 

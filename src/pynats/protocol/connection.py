@@ -4,6 +4,8 @@ import json
 from enum import IntEnum
 from typing import Iterator
 
+from pynats.errors import MaxPayloadSizeExceededError
+
 from .client_options import ClientOptions
 from .connection_state import ConnectionState, ConnectionStateMixin
 from .constant import (
@@ -63,15 +65,29 @@ class ParserState(IntEnum):
 
 class ConnectionProtocol(ConnectionStateMixin):
 
-    """Sans-IO implementation of a NATS connection."""
+    """Sans-IO implementation of a NATS connection.
+
+    References:
+        - https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-40.md
+        - https://beta-docs.nats.io/ref/protocols/client
+    """
 
     def __init__(self, options: ClientOptions) -> None:
+        """Initialize a new connection protocol.
+
+        Args:
+            options: The client options.
+
+        Raises:
+            ValueError: if the client options are invalid.
+        """
         super().__init__()
         self.options = options
         self.server_pool = options.new_server_pool()
         # State
         self._parser_state = ParserState.AWAITING_CONTROL_LINE
         self._current_server_or_none: Server | None = None
+        self._max_payload_size_or_none: int | None = None
         self._pending_message = PendingMessage()
         self._receive_buffer = bytearray()
         self._closed_event_sent = False
@@ -92,6 +108,7 @@ class ConnectionProtocol(ConnectionStateMixin):
         super()._reset()
         self._parser_state = ParserState.AWAITING_CONTROL_LINE
         self._current_server_or_none = None
+        self._max_payload_size_or_none = None
         self._pending_message = PendingMessage()
         self._receive_buffer = bytearray()
         self._closed_event_sent = False
@@ -219,19 +236,28 @@ class ConnectionProtocol(ConnectionStateMixin):
     ) -> bytes:
         """Returns PUB or HPUB command as bytes.
 
+        Raises:
+            ValueError: When payload size exceeds max payload size.
+
         Returns:
             The wired representation of a PUB or HPUB command.
         """
+        _check_subject(subject)
+        payload_size = len(payload)
+        if self._max_payload_size_or_none:
+            if payload_size > self._max_payload_size_or_none:
+                raise MaxPayloadSizeExceededError(
+                    f"payload size ({payload_size}) exceeds max payload size ({self._max_payload_size_or_none})"
+                )
         if not headers:
-            total_size = len(payload)
             return (
-                (f"{PUB_OP_S} {subject} {reply} {total_size}{CRLF_S}".encode())
+                (f"{PUB_OP_S} {subject} {reply} {payload_size}{CRLF_S}".encode())
                 + payload
                 + CRLF
             )
         encoded_hdr = encode_headers(headers)
         hdr_len = len(encoded_hdr)
-        total_size = len(payload) + hdr_len
+        total_size = payload_size + hdr_len
         return (
             (f"{HPUB_OP_S} {subject} {reply} {hdr_len} {total_size}{CRLF_S}".encode())
             + encoded_hdr
@@ -256,6 +282,7 @@ class ConnectionProtocol(ConnectionStateMixin):
         Returns:
             The wired representation of a SUB command.
         """
+        _check_subject(subject)
         if (
             self.is_waiting_for_server_selection()
             or self.is_waiting_for_server_info()
@@ -484,6 +511,7 @@ class ConnectionProtocol(ConnectionStateMixin):
                             "Current server should always be defined"
                         )
                     self._current_server_or_none.set_info(server_info)
+                    self._max_payload_size_or_none = server_info.max_payload
                     # Mark the connection as waiting for pong if we were waiting for info
                     if self.status == ConnectionState.WAITING_FOR_SERVER_INFO:
                         self.mark_as_waiting_for_client_connect()
@@ -555,3 +583,10 @@ class ConnectionProtocol(ConnectionStateMixin):
                     )
                 )
                 continue
+
+
+def _check_subject(sub: str) -> None:
+    if not sub:
+        raise ValueError("subject cannot be empty")
+    if " " in sub:
+        raise ValueError("subject cannot contain spaces")
